@@ -165,8 +165,8 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         if self.moe_kernel is not None:
             # Subsequent call (weight update): copy shuffled data into existing
             # tensors to preserve addresses used by captured CUDA graphs.
-            layer.w13_weight.data.copy_(w13_new)
-            layer.w2_weight.data.copy_(w2_new)
+            layer.w13_weight.copy_(w13_new)
+            layer.w2_weight.copy_(w2_new)
         else:
             # First call (initial load): replace parameters as usual.
             replace_parameter(layer, "w13_weight", w13_new)
