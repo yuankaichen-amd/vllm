@@ -48,6 +48,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         self.unquantized_backend, self.experts_cls = select_unquantized_moe_backend(
             moe_config=self.moe,
         )
+        self.moe_kernel = None
 
     @property
     def is_monolithic(self) -> bool:
@@ -154,27 +155,35 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         w2: torch.Tensor,
     ) -> None:
         # Shuffle weights to runtime format.
-        w13, w2 = convert_to_unquantized_kernel_format(
+        w13_new, w2_new = convert_to_unquantized_kernel_format(
             self.unquantized_backend,
             layer=layer,
             w13_weight=w13,
             w2_weight=w2,
         )
-        replace_parameter(layer, "w13_weight", w13)
-        replace_parameter(layer, "w2_weight", w2)
 
-        # Setup moe kernel.
-        self.moe_quant_config = self.get_fused_moe_quant_config(layer)
-        assert self.moe_quant_config is not None
-        assert self.experts_cls is not None
-        self.moe_kernel = make_unquantized_moe_kernel(
-            quant_config=self.moe_quant_config,
-            moe_config=self.moe,
-            backend=self.unquantized_backend,
-            experts_cls=self.experts_cls,
-            routing_tables=layer._maybe_init_expert_routing_tables(),
-            shared_experts=layer.shared_experts,
-        )
+        if self.moe_kernel is not None:
+            # Subsequent call (weight update): copy shuffled data into existing
+            # tensors to preserve addresses used by captured CUDA graphs.
+            layer.w13_weight.data.copy_(w13_new)
+            layer.w2_weight.data.copy_(w2_new)
+        else:
+            # First call (initial load): replace parameters as usual.
+            replace_parameter(layer, "w13_weight", w13_new)
+            replace_parameter(layer, "w2_weight", w2_new)
+
+            # Setup moe kernel.
+            self.moe_quant_config = self.get_fused_moe_quant_config(layer)
+            assert self.moe_quant_config is not None
+            assert self.experts_cls is not None
+            self.moe_kernel = make_unquantized_moe_kernel(
+                quant_config=self.moe_quant_config,
+                moe_config=self.moe,
+                backend=self.unquantized_backend,
+                experts_cls=self.experts_cls,
+                routing_tables=layer._maybe_init_expert_routing_tables(),
+                shared_experts=layer.shared_experts,
+            )
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         super().process_weights_after_loading(layer)
